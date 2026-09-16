@@ -1,9 +1,14 @@
 pipeline {
     agent any
 
+    options {
+        skipDefaultCheckout(true)
+    }
+
     environment {
         IMAGE_NAME = 'mi-app-web'
         CONTAINER_NAME = 'mi-contenedor-web'
+
         VM_IP = '10.100.128.142'
         VM_USER = 'vboxuser'
         SSH_CREDS = 'ssh-vm-ubuntu'
@@ -19,21 +24,21 @@ pipeline {
 
         stage('Construir Imagen Docker') {
             steps {
-                script {
-                    docker.build("${IMAGE_NAME}:latest")
-                }
+                sh "docker build -t ${IMAGE_NAME}:latest ."
             }
         }
 
         stage('Empaquetar Imagen') {
             steps {
-                echo 'Convirtiendo imagen a archivo .tar...'
+                echo 'Convirtiendo imagen a archivo .tar para enviarla...'
                 sh "docker save ${IMAGE_NAME}:latest -o ${IMAGE_NAME}.tar"
             }
         }
 
         stage('Enviar a Ubuntu') {
             steps {
+                echo 'Enviando imagen por SSH a Ubuntu...'
+
                 withCredentials([
                     sshUserPrivateKey(
                         credentialsId: "${SSH_CREDS}",
@@ -41,7 +46,8 @@ pipeline {
                     )
                 ]) {
                     sh '''
-                        scp -i $SSH_KEY -o StrictHostKeyChecking=no \
+                        scp -i $SSH_KEY \
+                        -o StrictHostKeyChecking=no \
                         ${IMAGE_NAME}.tar \
                         ${VM_USER}@${VM_IP}:/tmp/${IMAGE_NAME}.tar
                     '''
@@ -51,6 +57,8 @@ pipeline {
 
         stage('Desplegar en Ubuntu') {
             steps {
+                echo 'Levantando contenedor en Ubuntu...'
+
                 withCredentials([
                     sshUserPrivateKey(
                         credentialsId: "${SSH_CREDS}",
@@ -58,17 +66,24 @@ pipeline {
                     )
                 ]) {
                     sh """
-                        ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${VM_USER}@${VM_IP} '
+                        ssh -i \$SSH_KEY \
+                        -o StrictHostKeyChecking=no \
+                        ${VM_USER}@${VM_IP} '
+
+                            echo "Deteniendo contenedor anterior..."
                             docker stop ${CONTAINER_NAME} || true
                             docker rm ${CONTAINER_NAME} || true
 
+                            echo "Cargando nueva imagen..."
                             docker load -i /tmp/${IMAGE_NAME}.tar
 
+                            echo "Levantando nuevo contenedor..."
                             docker run -d \
                                 -p 80:80 \
                                 --name ${CONTAINER_NAME} \
                                 ${IMAGE_NAME}:latest
 
+                            echo "Limpiando archivo temporal..."
                             rm /tmp/${IMAGE_NAME}.tar
                         '
                     """
@@ -79,15 +94,16 @@ pipeline {
 
     post {
         always {
+            echo 'Limpiando archivos temporales en Jenkins...'
             sh "rm -f ${IMAGE_NAME}.tar"
         }
 
         success {
-            echo "Despliegue exitoso en ${VM_IP}"
+            echo "¡Despliegue exitoso en ${VM_IP}!"
         }
 
         failure {
-            echo 'El despliegue falló. Revisar logs.'
+            echo 'El despliegue falló. Revisa los logs.'
         }
     }
 }
